@@ -8,9 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import numpy as np
 
 from drone_vtx_sim.channels import TDL_PRESETS, max_doppler_hz, normalize_taps
+from drone_vtx_sim.fec import FecCodec
 from drone_vtx_sim.link_budget import eirp_dbm, noise_floor_dbm
 from drone_vtx_sim.models import CAMERA_PRESETS_MBPS, DEFAULT_MCS_TABLE, PhyConfig, RadioConfig, SimulationConfig, SweepConfig
-from drone_vtx_sim.phy import active_subcarrier_indices, demodulate_hard, dmrs_positions, modulate_bits, ofdm_demodulate, ofdm_modulate
+from drone_vtx_sim.phy import active_subcarrier_indices, demodulate_hard, demodulate_llr, dmrs_positions, modulate_bits, ofdm_demodulate, ofdm_modulate
 from drone_vtx_sim.sweeps import run_ber_sweep, run_range_sweep
 from drone_vtx_sim.throughput import usable_throughput_mbps
 
@@ -33,6 +34,20 @@ class CoreTests(unittest.TestCase):
             bits = rng.integers(0, 2, size=bits_per_symbol * 100, dtype=np.uint8)
             recovered = demodulate_hard(modulate_bits(bits, modulation), modulation)
             np.testing.assert_array_equal(bits, recovered[: len(bits)])
+
+    def test_ldpc_parity_and_decode(self):
+        rng = np.random.default_rng(7)
+        for rate in [0.5, 2 / 3, 0.75]:
+            codec = FecCodec(rate)
+            bits = rng.integers(0, 2, size=codec.info_length, dtype=np.uint8)
+            cw = codec.encode(bits)
+            np.testing.assert_array_equal(codec.syndrome(cw), np.zeros(codec.parity_checks.shape[0], dtype=np.uint8))
+            symbols = modulate_bits(cw, "QPSK")
+            noise_var = 1e-4
+            noise = (rng.normal(size=symbols.shape) + 1j * rng.normal(size=symbols.shape)) * np.sqrt(noise_var / 2)
+            llr = demodulate_llr(symbols + noise, "QPSK", noise_var)[: codec.codeword_length]
+            decoded = codec.decode_llr(llr, max_iters=20)
+            np.testing.assert_array_equal(decoded, bits)
 
     def test_ofdm_round_trip(self):
         phy = PhyConfig()

@@ -53,6 +53,21 @@ def demodulate_hard(symbols: np.ndarray, modulation: str) -> np.ndarray:
     return ((indices[:, None] & (1 << np.arange(bits_per_symbol - 1, -1, -1))) > 0).astype(np.uint8).ravel()
 
 
+def demodulate_llr(symbols: np.ndarray, modulation: str, noise_var: float) -> np.ndarray:
+    const = qam_constellation(modulation)
+    bits_per_symbol = int(math.log2(len(const)))
+    labels = ((np.arange(len(const))[:, None] & (1 << np.arange(bits_per_symbol - 1, -1, -1))) > 0).astype(np.uint8)
+    noise_var = max(float(noise_var), 1e-9)
+    llrs = np.empty((len(symbols), bits_per_symbol), dtype=float)
+    for bit_idx in range(bits_per_symbol):
+        s0 = const[labels[:, bit_idx] == 0]
+        s1 = const[labels[:, bit_idx] == 1]
+        d0 = np.min(np.abs(symbols[:, None] - s0[None, :]) ** 2, axis=1)
+        d1 = np.min(np.abs(symbols[:, None] - s1[None, :]) ** 2, axis=1)
+        llrs[:, bit_idx] = (d1 - d0) / noise_var
+    return llrs.ravel()
+
+
 def ofdm_modulate(active_symbols: np.ndarray, config: PhyConfig) -> np.ndarray:
     bins = np.zeros(config.fft_size, dtype=np.complex128)
     active = active_subcarrier_indices(config)
@@ -98,4 +113,3 @@ def interpolate_channel(pilot_positions: Iterable[int], pilot_estimates: np.ndar
     real = np.interp(x, positions, pilot_estimates.real)
     imag = np.interp(x, positions, pilot_estimates.imag)
     return real + 1j * imag
-

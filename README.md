@@ -27,7 +27,9 @@ PYTHONPATH=src python3 -m unittest discover -s tests
 
 ## Current Scope
 
-This is a floating-point reference simulator. The FEC module exposes a replaceable LDPC-style interface and uses rate-dependent coding behavior for BER/PER sweeps; it is not yet a standards-grade LDPC implementation.
+This is a floating-point reference simulator. The FEC module now includes an actual iterative LDPC encoder/decoder path with rates `1/2`, `2/3`, and `3/4`, and the BER/PER sweeps use decoded codewords rather than a synthetic coding-gain curve.
+
+The current LDPC family is a compact structured implementation for simulation and integration work; it is not yet a 3GPP NR QC-LDPC or IEEE standards profile.
 
 The UI has two tabs:
 

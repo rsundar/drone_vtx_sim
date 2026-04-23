@@ -5,12 +5,12 @@ from typing import Callable, List
 
 import numpy as np
 import pandas as pd
-from scipy.special import erfc
 
 from .channels import channel_effective_snr, max_doppler_hz, rms_delay_spread_ns, TDL_PRESETS
 from .fec import FecCodec
 from .link_budget import free_space_path_loss_db, noise_floor_dbm, received_power_dbm, snr_at_distance_db
 from .models import MCS, SimulationConfig
+from .phy import demodulate_hard, demodulate_llr, modulate_bits
 from .throughput import usable_throughput_mbps
 
 ProgressCallback = Callable[[int, int, str], None]
@@ -24,23 +24,6 @@ def snr_points(config: SimulationConfig) -> np.ndarray:
 def distance_points(config: SimulationConfig) -> np.ndarray:
     sweep = config.sweep
     return np.arange(sweep.distance_min_m, sweep.distance_max_m + 0.001, sweep.distance_step_m)
-
-
-def raw_ber_awgn(snr_db: float, mcs: MCS) -> float:
-    gamma = 10 ** (snr_db / 10)
-    if mcs.modulation == "QPSK":
-        return 0.5 * erfc(math.sqrt(gamma))
-    m = 2 ** mcs.bits_per_symbol
-    return min(0.5, (4 / mcs.bits_per_symbol) * (1 - 1 / math.sqrt(m)) * 0.5 * erfc(math.sqrt(3 * mcs.bits_per_symbol * gamma / (2 * (m - 1)))))
-
-
-def post_fec_ber(pre_fec_ber: float, effective_snr_db: float, mcs: MCS) -> float:
-    codec = FecCodec(mcs.code_rate)
-    margin = effective_snr_db + codec.coding_gain_db - mcs.snr_threshold_db
-    waterfall = 1 / (1 + math.exp(1.8 * margin))
-    floor = 1e-9 if margin > 3 else 0.0
-    return min(pre_fec_ber, pre_fec_ber * waterfall + floor)
-
 
 def packet_error_rate(bit_error_rate: float, payload_bytes: int) -> float:
     bits = payload_bytes * 8
@@ -73,9 +56,9 @@ def nominal_effective_snr_db(config: SimulationConfig, snr_db: float) -> float:
 
 
 def estimated_per_for_mcs(config: SimulationConfig, snr_db: float, mcs: MCS) -> float:
-    pre = raw_ber_awgn(snr_db, mcs)
-    post = post_fec_ber(pre, snr_db, mcs)
-    return packet_error_rate(post, config.sweep.payload_bytes)
+    seed = int(round(snr_db * 10)) + 1000 * (hash(mcs.name) & 0xFFFF)
+    metrics = simulate_ldpc_blocks(FecCodec(mcs.code_rate), mcs, snr_db, 10, config.sweep.payload_bytes, np.random.default_rng(seed))
+    return float(metrics["per"])
 
 
 def select_mcs(config: SimulationConfig, snr_db: float) -> MCS:
@@ -98,9 +81,51 @@ def select_mcs(config: SimulationConfig, snr_db: float) -> MCS:
     return config.mcs_table[0]
 
 
+def simulate_ldpc_blocks(
+    codec: FecCodec,
+    mcs: MCS,
+    effective_snr_db: float,
+    samples: int,
+    payload_bytes: int,
+    rng: np.random.Generator,
+) -> dict:
+    snr_linear = 10 ** (effective_snr_db / 10)
+    noise_var = 1.0 / max(snr_linear, 1e-9)
+    total_coded_errors = 0
+    total_coded_bits = 0
+    total_info_errors = 0
+    total_info_bits = 0
+    block_errors = 0
+
+    for _ in range(max(1, samples)):
+        info_bits = rng.integers(0, 2, size=codec.info_length, dtype=np.uint8)
+        codeword = codec.encode(info_bits)
+        tx = modulate_bits(codeword, mcs.modulation)
+        noise = (rng.normal(size=tx.shape) + 1j * rng.normal(size=tx.shape)) * math.sqrt(noise_var / 2)
+        rx = tx + noise
+        hard = demodulate_hard(rx, mcs.modulation)[: codec.codeword_length]
+        llr = demodulate_llr(rx, mcs.modulation, noise_var)[: codec.codeword_length]
+        decoded = codec.decode_llr(llr)
+
+        total_coded_errors += int(np.count_nonzero(hard != codeword))
+        total_coded_bits += int(codeword.size)
+        total_info_errors += int(np.count_nonzero(decoded != info_bits))
+        total_info_bits += int(info_bits.size)
+        if np.any(decoded != info_bits):
+            block_errors += 1
+
+    pre = total_coded_errors / max(1, total_coded_bits)
+    post = total_info_errors / max(1, total_info_bits)
+    blocks_per_packet = int(math.ceil((payload_bytes * 8) / codec.info_length))
+    bler = block_errors / max(1, samples)
+    per = 1 - (1 - bler) ** blocks_per_packet
+    return {"pre_fec_ber": pre, "post_fec_ber": post, "bler": bler, "per": per}
+
+
 def simulate_point(config: SimulationConfig, snr_db: float, rng: np.random.Generator) -> dict:
     sweep = config.sweep
     mcs = select_mcs(config, nominal_effective_snr_db(config, snr_db))
+    codec = FecCodec(mcs.code_rate)
     packets = max(1, int(sweep.packets_per_point))
     effective_values = []
     pre_values = []
@@ -121,13 +146,11 @@ def simulate_point(config: SimulationConfig, snr_db: float, rng: np.random.Gener
             sweep.custom_taps,
             rng,
         )
-        pre_i = raw_ber_awgn(state.effective_snr_db, mcs)
-        post_i = post_fec_ber(pre_i, state.effective_snr_db, mcs)
-        per_i = packet_error_rate(post_i, sweep.payload_bytes)
+        metrics = simulate_ldpc_blocks(codec, mcs, state.effective_snr_db, 1, sweep.payload_bytes, rng)
         effective_values.append(state.effective_snr_db)
-        pre_values.append(pre_i)
-        post_values.append(post_i)
-        per_values.append(per_i)
+        pre_values.append(metrics["pre_fec_ber"])
+        post_values.append(metrics["post_fec_ber"])
+        per_values.append(metrics["per"])
         fading_values.append(state.fading_loss_db)
         delay_values.append(state.delay_penalty_db)
         doppler_values.append(state.doppler_penalty_db)
