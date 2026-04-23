@@ -1,0 +1,22 @@
+# Reference profile consumed by humans and future config loaders.
+radio:
+  carrier_hz: 5800000000
+  bandwidth_hz: 20000000
+  tx_power_dbm: 27
+  tx_antenna_gain_dbi: 2
+  rx_antenna_gain_dbi: 5
+  noise_figure_db: 6
+phy:
+  subcarrier_spacing_hz: 30000
+  sample_rate_hz: 30720000
+  fft_size: 1024
+  active_prbs: 51
+  active_subcarriers: 612
+  occupied_bandwidth_hz: 18360000
+  guard_band_hz: 1640000
+sweep:
+  channel_model: TDL Multipath + Doppler
+  speed_kmph: 50
+  tdl_profile: TDL-A
+  target_rate_mbps: 25
+

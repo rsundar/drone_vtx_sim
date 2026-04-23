@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "drone-vtx-simulation"
+version = "0.1.0"
+description = "Drone VTX PHY simulator with 5G-like OFDM numerology, Doppler channels, range budget, and Tkinter UI."
+requires-python = ">=3.9"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
